@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Irregular Sprite Sheet Slicer</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- JSZip library for creating ZIP files -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        #spriteCanvas {
+            background-image:
+                linear-gradient(45deg, #374151 25%, transparent 25%),
+                linear-gradient(-45deg, #374151 25%, transparent 25%),
+                linear-gradient(45deg, transparent 75%, #374151 75%),
+                linear-gradient(-45deg, transparent 75%, #374151 75%);
+            background-size: 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+            background-color: #1f2937; /* bg-gray-800 */
+        }
+        #spriteCanvas.edit-mode {
+            cursor: pointer;
+        }
+        #spriteCanvas.is-dragging {
+            cursor: crosshair;
+        }
+        .loader {
+            border-top-color: #4f46e5; /* indigo-600 */
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200 min-h-screen flex flex-col items-center p-4 sm:p-6">
+
+    <div class="w-full max-w-6xl mx-auto">
+        <header class="text-center mb-6">
+            <h1 class="text-3xl sm:text-4xl font-bold text-white">Irregular Sprite Sheet Slicer</h1>
+            <p class="text-gray-400 mt-2">Auto-detect, manually refine, and export sprites with custom padding.</p>
+        </header>
+
+        <main class="bg-gray-800 rounded-2xl shadow-lg p-4 sm:p-8 w-full">
+
+            <div id="controls" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 items-end gap-4 mb-6 p-4 bg-gray-900/50 rounded-lg">
+                <div class="flex flex-col w-full">
+                    <label for="spriteSheetUpload" class="text-sm font-medium text-gray-300 mb-1">1. Upload Sheet</label>
+                    <input type="file" id="spriteSheetUpload" accept="image/*" class="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-700 transition-colors duration-200 cursor-pointer"/>
+                </div>
+                <div class="flex flex-col w-full">
+                    <label for="mergeDistance" class="text-sm font-medium text-gray-300 mb-1">2. Merge Distance (<span id="mergeDistanceValue">8</span>px)</label>
+                    <input type="range" id="mergeDistance" min="0" max="100" value="8" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                </div>
+                 <div class="flex flex-col w-full">
+                    <label for="padding" class="text-sm font-medium text-gray-300 mb-1">3. Padding (<span id="paddingValue">0</span>px)</label>
+                    <input type="range" id="padding" min="0" max="32" value="0" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                </div>
+                <div class="flex items-center gap-2 sm:gap-4 w-full">
+                    <button id="sliceButton" disabled class="flex-grow bg-indigo-600 text-white font-semibold py-2 px-5 rounded-lg shadow-md hover:bg-indigo-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-all duration-200">
+                        Slice
+                    </button>
+                    <button id="clearButton" class="flex-grow bg-gray-600 text-white font-semibold py-2 px-5 rounded-lg shadow-md hover:bg-gray-500 transition-all duration-200">
+                        Clear
+                    </button>
+                </div>
+            </div>
+            
+            <div id="status" class="text-center my-4 min-h-[2rem] flex items-center justify-center gap-3"></div>
+
+            <div id="editControls" class="hidden items-center justify-center gap-3 my-4 p-3 bg-gray-900/50 rounded-lg text-center">
+                 <p class="font-semibold text-indigo-300 hidden md:block">Edit Mode:</p>
+                 <p class="text-gray-400 text-sm flex-grow text-left md:text-center">Click or Drag on canvas to select.</p>
+                 <button id="mergeSelectedButton" disabled class="bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed">Merge</button>
+                 <button id="deleteSelectedButton" disabled class="bg-red-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed">Delete</button>
+                 <button id="applyEditsButton" class="bg-green-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-green-700">Apply & Exit</button>
+                 <button id="cancelEditsButton" class="bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-gray-500">Cancel</button>
+            </div>
+
+            <div id="canvasContainer" class="mb-8 hidden">
+                <h2 class="text-xl font-semibold mb-2 text-white">Preview</h2>
+                <canvas id="spriteCanvas" class="w-full h-auto rounded-lg border-2 border-gray-600"></canvas>
+            </div>
+
+            <div id="outputSection" class="hidden">
+                <div class="flex flex-col sm:flex-row justify-between items-center mb-4 gap-2">
+                    <h2 class="text-xl font-semibold text-white">Sliced Sprites (<span id="spriteCount">0</span>)</h2>
+                    <div class="flex gap-2">
+                        <button id="editSlicesButton" disabled class="bg-yellow-600 text-white font-semibold py-2 px-5 rounded-lg shadow-md hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed">
+                            Edit Slices
+                        </button>
+                        <button id="downloadAllButton" disabled class="w-full sm:w-auto bg-green-600 text-white font-semibold py-2 px-5 rounded-lg shadow-md hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed">
+                            Download All (.zip)
+                        </button>
+                    </div>
+                </div>
+                <div id="spriteOutput" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4 bg-gray-900/50 p-4 rounded-lg"></div>
+            </div>
+        </main>
+        
+        <footer class="text-center mt-8 text-gray-500 text-sm">
+            <p>A simple tool for game developers and designers.</p>
+        </footer>
+    </div>
+
+    <script>
+        // DOM element references
+        const uploadInput = document.getElementById('spriteSheetUpload');
+        const sliceButton = document.getElementById('sliceButton');
+        const clearButton = document.getElementById('clearButton');
+        const downloadAllButton = document.getElementById('downloadAllButton');
+        const editSlicesButton = document.getElementById('editSlicesButton');
+        const canvas = document.getElementById('spriteCanvas');
+        const ctx = canvas.getContext('2d');
+        const canvasContainer = document.getElementById('canvasContainer');
+        const outputSection = document.getElementById('outputSection');
+        const spriteOutput = document.getElementById('spriteOutput');
+        const spriteCountSpan = document.getElementById('spriteCount');
+        const statusDiv = document.getElementById('status');
+        const mergeDistanceSlider = document.getElementById('mergeDistance');
+        const mergeDistanceValueSpan = document.getElementById('mergeDistanceValue');
+        const paddingSlider = document.getElementById('padding');
+        const paddingValueSpan = document.getElementById('paddingValue');
+        
+        const editControls = document.getElementById('editControls');
+        const mergeSelectedButton = document.getElementById('mergeSelectedButton');
+        const deleteSelectedButton = document.getElementById('deleteSelectedButton');
+        const applyEditsButton = document.getElementById('applyEditsButton');
+        const cancelEditsButton = document.getElementById('cancelEditsButton');
+
+        // App state
+        let originalImage = null;
+        let spriteRects = [];
+        let tempSpriteRects = [];
+        let selectedRectIndices = [];
+        let isEditMode = false;
+        let isDragging = false;
+        let selectionRect = { startX: 0, startY: 0, x: 0, y: 0, w: 0, h: 0 };
+
+        // --- Event Listeners ---
+        uploadInput.addEventListener('change', handleImageUpload);
+        sliceButton.addEventListener('click', processAndSliceSprites);
+        clearButton.addEventListener('click', resetApp);
+        downloadAllButton.addEventListener('click', downloadAllAsZip);
+        mergeDistanceSlider.addEventListener('input', () => mergeDistanceValueSpan.textContent = mergeDistanceSlider.value);
+        paddingSlider.addEventListener('input', () => {
+            paddingValueSpan.textContent = paddingSlider.value;
+            // Re-render sprites if they exist to show new padding
+            if(spriteRects.length > 0) displaySlicedSprites();
+        });
+        editSlicesButton.addEventListener('click', enterEditMode);
+        canvas.addEventListener('mousedown', handleCanvasMouseDown);
+        canvas.addEventListener('mousemove', handleCanvasMouseMove);
+        canvas.addEventListener('mouseup', handleCanvasMouseUp);
+
+        mergeSelectedButton.addEventListener('click', mergeSelectedRects);
+        deleteSelectedButton.addEventListener('click', deleteSelectedRects);
+        applyEditsButton.addEventListener('click', applyAndExitEditMode);
+        cancelEditsButton.addEventListener('click', cancelEditMode);
+
+        // --- Core Functions ---
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (!file || !file.type.startsWith('image/')) {
+                showStatus('Please select an image file.', 'error');
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                originalImage = new Image();
+                originalImage.onload = () => {
+                    resetApp(false); 
+                    setupCanvas();
+                    sliceButton.disabled = false;
+                    showStatus('Image loaded. Ready to slice.', 'success');
+                };
+                originalImage.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function setupCanvas() {
+            canvas.width = originalImage.width;
+            canvas.height = originalImage.height;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(originalImage, 0, 0);
+            canvasContainer.classList.remove('hidden');
+        }
+
+        async function processAndSliceSprites() {
+            if (!originalImage) return;
+
+            spriteRects = [];
+            spriteOutput.innerHTML = '';
+            outputSection.classList.add('hidden');
+
+            showStatus('Detecting sprites... this may take a moment for large images.', 'loading');
+            sliceButton.disabled = true;
+            downloadAllButton.disabled = true;
+            editSlicesButton.disabled = true;
+
+            setTimeout(() => {
+                try {
+                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const rawRects = findSpriteRectangles(imageData);
+                    const mergeDistance = parseInt(mergeDistanceSlider.value, 10);
+
+                    spriteRects = mergeDistance > 0 ? mergeSpriteRectangles(rawRects, mergeDistance) : rawRects;
+                    
+                    drawSpriteRects();
+                    displaySlicedSprites();
+                    showStatus(`${spriteRects.length} sprites found.`, 'success');
+                } catch (error) {
+                    console.error("Slicing failed:", error);
+                    showStatus('An error occurred during slicing.', 'error');
+                } finally {
+                   sliceButton.disabled = false;
+                   if (spriteRects.length > 0) {
+                       downloadAllButton.disabled = false;
+                       editSlicesButton.disabled = false;
+                   }
+                }
+            }, 100);
+        }
+
+        function findSpriteRectangles(imageData) {
+            const { width, height, data } = imageData;
+            const visited = new Uint8Array(width * height);
+            const rects = [];
+            const alphaThreshold = 10;
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const index = (y * width + x);
+                    if (visited[index]) continue;
+                    const alphaIndex = index * 4 + 3;
+                    if (data[alphaIndex] > alphaThreshold) {
+                        const rect = findConnectedComponent(x, y, width, height, data, visited, alphaThreshold);
+                        if (rect) rects.push(rect);
+                    }
+                }
+            }
+            return rects;
+        }
+
+        function findConnectedComponent(startX, startY, width, height, data, visited, threshold) {
+            const queue = [[startX, startY]];
+            let minX = startX, minY = startY, maxX = startX, maxY = startY;
+            const startIndex = (startY * width + startX);
+            if (visited[startIndex]) return null;
+            visited[startIndex] = 1;
+            let head = 0;
+            while (head < queue.length) {
+                const [x, y] = queue[head++];
+                minX = Math.min(minX, x); minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+                const neighbors = [
+                    [x - 1, y - 1], [x, y - 1], [x + 1, y - 1],
+                    [x - 1, y],                 [x + 1, y],
+                    [x - 1, y + 1], [x, y + 1], [x + 1, y + 1]
+                ];
+                for (const [nx, ny] of neighbors) {
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                        const index = (ny * width + nx);
+                        if (!visited[index]) {
+                            visited[index] = 1;
+                            const alphaIndex = index * 4 + 3;
+                            if (data[alphaIndex] > threshold) queue.push([nx, ny]);
+                        }
+                    }
+                }
+            }
+            return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+        }
+
+        function mergeSpriteRectangles(rects, distance) {
+            if (distance <= 0 || rects.length < 2) return rects;
+            let mergedRects = [...rects];
+            let somethingMerged = true;
+            while (somethingMerged) {
+                somethingMerged = false;
+                for (let i = 0; i < mergedRects.length; i++) {
+                    for (let j = i + 1; j < mergedRects.length; j++) {
+                        const r1 = mergedRects[i];
+                        const r2 = mergedRects[j];
+                        const expandedR1 = { x: r1.x - distance, y: r1.y - distance, w: r1.w + 2 * distance, h: r1.h + 2 * distance };
+                        const intersects = (expandedR1.x < r2.x + r2.w && expandedR1.x + expandedR1.w > r2.x && expandedR1.y < r2.y + r2.h && expandedR1.y + expandedR1.h > r2.y);
+                        if (intersects) {
+                            const newX = Math.min(r1.x, r2.x);
+                            const newY = Math.min(r1.y, r2.y);
+                            const newW = Math.max(r1.x + r1.w, r2.x + r2.w) - newX;
+                            const newH = Math.max(r1.y + r1.h, r2.y + r2.h) - newY;
+                            mergedRects[i] = { x: newX, y: newY, w: newW, h: newH };
+                            mergedRects.splice(j, 1);
+                            somethingMerged = true;
+                            break;
+                        }
+                    }
+                    if (somethingMerged) break;
+                }
+            }
+            return mergedRects;
+        }
+
+        function drawSpriteRects(rectsToDraw = spriteRects, selectedIndices = [], drawSelection = false) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(originalImage, 0, 0);
+            rectsToDraw.forEach((rect, index) => {
+                ctx.strokeStyle = selectedIndices.includes(index) ? 'rgba(59, 130, 246, 0.9)' : 'rgba(239, 68, 68, 0.8)';
+                ctx.lineWidth = selectedIndices.includes(index) ? 3 : 2;
+                ctx.strokeRect(rect.x - 1, rect.y - 1, rect.w + 2, rect.h + 2);
+            });
+            if (drawSelection && isDragging) {
+                ctx.fillStyle = 'rgba(59, 130, 246, 0.3)';
+                ctx.fillRect(selectionRect.x, selectionRect.y, selectionRect.w, selectionRect.h);
+                ctx.strokeStyle = 'rgba(59, 130, 246, 0.9)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(selectionRect.x, selectionRect.y, selectionRect.w, selectionRect.h);
+            }
+        }
+        
+        function displaySlicedSprites() {
+            spriteOutput.innerHTML = '';
+            outputSection.classList.toggle('hidden', spriteRects.length === 0);
+            spriteCountSpan.textContent = spriteRects.length;
+            const padding = parseInt(paddingSlider.value, 10);
+
+            spriteRects.forEach((rect, index) => {
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = rect.w + padding * 2;
+                tempCanvas.height = rect.h + padding * 2;
+                const tempCtx = tempCanvas.getContext('2d');
+                tempCtx.drawImage(originalImage, rect.x, rect.y, rect.w, rect.h, padding, padding, rect.w, rect.h);
+                const dataUrl = tempCanvas.toDataURL('image/png');
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'group relative flex flex-col items-center justify-center p-2 bg-gray-700 rounded-lg shadow-md h-32';
+                const img = document.createElement('img');
+                img.src = dataUrl;
+                img.className = 'max-w-full max-h-full object-contain rounded-md';
+                img.title = `Sprite ${index + 1} (${rect.w}x${rect.h})`;
+                const downloadLink = document.createElement('a');
+                downloadLink.href = dataUrl;
+                downloadLink.download = `sprite_${index}.png`;
+                downloadLink.className = 'absolute bottom-1 right-1 p-2 bg-indigo-600 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity duration-200';
+                downloadLink.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-download" viewBox="0 0 16 16"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg>`;
+                downloadLink.title = "Download sprite";
+                wrapper.appendChild(img);
+                wrapper.appendChild(downloadLink);
+                spriteOutput.appendChild(wrapper);
+            });
+        }
+        
+        // --- Edit Mode Functions ---
+        function getCanvasMousePos(event) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            return { x: (event.clientX - rect.left) * scaleX, y: (event.clientY - rect.top) * scaleY };
+        }
+
+        function enterEditMode() {
+            isEditMode = true;
+            tempSpriteRects = JSON.parse(JSON.stringify(spriteRects));
+            selectedRectIndices = [];
+            controls.classList.add('hidden');
+            outputSection.classList.add('hidden');
+            editControls.classList.add('flex');
+            editControls.classList.remove('hidden');
+            canvas.classList.add('edit-mode');
+            updateEditButtonStates();
+            showStatus('EDIT MODE: Click or Drag on the preview to select slices.', 'info');
+        }
+
+        function handleCanvasMouseDown(event) {
+            if (!isEditMode) return;
+            const pos = getCanvasMousePos(event);
+            isDragging = true;
+            selectionRect.startX = pos.x;
+            selectionRect.startY = pos.y;
+            selectionRect.x = pos.x;
+            selectionRect.y = pos.y;
+            selectionRect.w = 0;
+            selectionRect.h = 0;
+            canvas.classList.add('is-dragging');
+        }
+
+        function handleCanvasMouseMove(event) {
+            if (!isEditMode || !isDragging) return;
+            const pos = getCanvasMousePos(event);
+            selectionRect.x = Math.min(pos.x, selectionRect.startX);
+            selectionRect.y = Math.min(pos.y, selectionRect.startY);
+            selectionRect.w = Math.abs(pos.x - selectionRect.startX);
+            selectionRect.h = Math.abs(pos.y - selectionRect.startY);
+            drawSpriteRects(tempSpriteRects, selectedRectIndices, true);
+        }
+
+        function handleCanvasMouseUp(event) {
+            if (!isEditMode || !isDragging) return;
+            isDragging = false;
+            canvas.classList.remove('is-dragging');
+            const pos = getCanvasMousePos(event);
+            const dist = Math.hypot(pos.x - selectionRect.startX, pos.y - selectionRect.startY);
+
+            if (dist < 5) { // It's a click
+                let clickedIndex = -1;
+                for (let i = tempSpriteRects.length - 1; i >= 0; i--) {
+                    const r = tempSpriteRects[i];
+                    if (pos.x >= r.x && pos.x <= r.x + r.w && pos.y >= r.y && pos.y <= r.y + r.h) {
+                        clickedIndex = i;
+                        break;
+                    }
+                }
+                if (clickedIndex !== -1) {
+                    const selectionIndex = selectedRectIndices.indexOf(clickedIndex);
+                    if (selectionIndex > -1) selectedRectIndices.splice(selectionIndex, 1);
+                    else selectedRectIndices.push(clickedIndex);
+                }
+            } else { // It's a drag-select
+                tempSpriteRects.forEach((r, index) => {
+                    const rectIntersects = (r.x < selectionRect.x + selectionRect.w && r.x + r.w > selectionRect.x && r.y < selectionRect.y + selectionRect.h && r.y + r.h > selectionRect.y);
+                    if (rectIntersects && !selectedRectIndices.includes(index)) {
+                        selectedRectIndices.push(index);
+                    }
+                });
+            }
+            drawSpriteRects(tempSpriteRects, selectedRectIndices, false);
+            updateEditButtonStates();
+        }
+        
+        function mergeSelectedRects() {
+            if (selectedRectIndices.length < 2) return;
+            selectedRectIndices.sort((a, b) => b - a);
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            selectedRectIndices.forEach(index => {
+                const r = tempSpriteRects[index];
+                minX = Math.min(minX, r.x); minY = Math.min(minY, r.y);
+                maxX = Math.max(maxX, r.x + r.w); maxY = Math.max(maxY, r.y + r.h);
+            });
+            const mergedRect = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+            selectedRectIndices.forEach(index => tempSpriteRects.splice(index, 1));
+            tempSpriteRects.push(mergedRect);
+            selectedRectIndices = [];
+            drawSpriteRects(tempSpriteRects, []);
+            updateEditButtonStates();
+        }
+
+        function deleteSelectedRects() {
+             if (selectedRectIndices.length === 0) return;
+            selectedRectIndices.sort((a, b) => b - a);
+            selectedRectIndices.forEach(index => tempSpriteRects.splice(index, 1));
+            selectedRectIndices = [];
+            drawSpriteRects(tempSpriteRects, []);
+            updateEditButtonStates();
+        }
+
+        function applyAndExitEditMode() {
+            spriteRects = JSON.parse(JSON.stringify(tempSpriteRects));
+            exitEditMode();
+            displaySlicedSprites();
+            showStatus(`Edits applied. ${spriteRects.length} final sprites.`, 'success');
+        }
+        
+        function cancelEditMode() {
+            exitEditMode();
+            showStatus('Edits cancelled.', 'info');
+        }
+
+        function exitEditMode() {
+            isEditMode = false;
+            isDragging = false;
+            tempSpriteRects = [];
+            selectedRectIndices = [];
+            controls.classList.remove('hidden');
+            outputSection.classList.remove('hidden');
+            editControls.classList.remove('flex');
+            editControls.classList.add('hidden');
+            canvas.classList.remove('edit-mode', 'is-dragging');
+            drawSpriteRects();
+        }
+
+        function updateEditButtonStates() {
+            const numSelected = selectedRectIndices.length;
+            mergeSelectedButton.disabled = numSelected < 2;
+            deleteSelectedButton.disabled = numSelected === 0;
+        }
+
+        // --- Utility Functions ---
+        function resetApp(fullReset = true) {
+            if (isEditMode) exitEditMode();
+            if (fullReset) {
+                uploadInput.value = '';
+                originalImage = null;
+            }
+            spriteRects = [];
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            spriteOutput.innerHTML = '';
+            canvasContainer.classList.add('hidden');
+            outputSection.classList.add('hidden');
+            sliceButton.disabled = true;
+            downloadAllButton.disabled = true;
+            editSlicesButton.disabled = true;
+            spriteCountSpan.textContent = '0';
+            showStatus('Select an image to begin.');
+        }
+
+        function showStatus(message, type = 'info') {
+            statusDiv.innerHTML = '';
+            const p = document.createElement('p');
+            p.textContent = message;
+            if (type === 'loading') {
+                const loader = document.createElement('div');
+                loader.className = 'loader w-5 h-5 border-2 border-gray-600 rounded-full';
+                statusDiv.appendChild(loader);
+            }
+            p.className = 'font-medium';
+            if(type === 'success') p.classList.add('text-green-400');
+            else if (type === 'error') p.classList.add('text-red-400');
+            else p.classList.add('text-gray-400');
+            statusDiv.appendChild(p);
+        }
+
+        function downloadAllAsZip() {
+            if (spriteRects.length === 0) return;
+            showStatus('Preparing ZIP file...', 'loading');
+            downloadAllButton.disabled = true;
+            const padding = parseInt(paddingSlider.value, 10);
+            const zip = new JSZip();
+            const promises = spriteRects.map((rect, index) => {
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = rect.w + padding * 2;
+                tempCanvas.height = rect.h + padding * 2;
+                const tempCtx = tempCanvas.getContext('2d');
+                tempCtx.drawImage(originalImage, rect.x, rect.y, rect.w, rect.h, padding, padding, rect.w, rect.h);
+                return new Promise(resolve => {
+                    tempCanvas.toBlob(blob => {
+                        zip.file(`sprite_${index}.png`, blob);
+                        resolve();
+                    });
+                });
+            });
+
+            Promise.all(promises).then(() => {
+                zip.generateAsync({ type: "blob" }).then(content => {
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(content);
+                    link.download = "sprites.zip";
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    showStatus('ZIP file generated successfully.', 'success');
+                    downloadAllButton.disabled = false;
+                });
+            });
+        }
+        resetApp();
+    </script>
+</body>
+</html>
+
